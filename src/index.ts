@@ -287,6 +287,109 @@ async function saveContentToFile(content, filePath) {
   }
 }
 
+// Add this interface for structured content
+interface VectorizedContent {
+  id: string;
+  title: string;
+  pageId: string;
+  spaceKey: string;
+  content: string;
+  type: 'main' | 'list_item' | 'metadata';
+  metadata: {
+    url: string;
+    lastUpdated: string;
+    author: string;
+    section?: string;
+    listType?: 'bullet' | 'numbered';
+  };
+}
+
+// Enhance the extraction function to capture all content
+function extractVectorContent(htmlContent: string, pageMetadata: any): VectorizedContent[] {
+  try {
+    const root = parse(htmlContent);
+    const vectors: VectorizedContent[] = [];
+    
+    const baseMetadata = {
+      url: `${CONFLUENCE_HOST}/wiki/spaces/${pageMetadata.space.key}/pages/${pageMetadata.id}`,
+      lastUpdated: pageMetadata.version.when,
+      author: pageMetadata.version.by.displayName,
+    };
+
+    // Main description vector
+    const mainDescription = root.querySelector('p');
+    if (mainDescription) {
+      vectors.push({
+        id: `${pageMetadata.id}-main`,
+        title: pageMetadata.title,
+        pageId: pageMetadata.id,
+        spaceKey: pageMetadata.space.key,
+        content: mainDescription.textContent.trim(),
+        type: 'main',
+        metadata: {
+          ...baseMetadata,
+          section: 'Description'
+        }
+      });
+    }
+
+    // Collection items vector
+    const listItems = root.querySelectorAll('ul > li');
+    listItems.forEach((item, index) => {
+      vectors.push({
+        id: `${pageMetadata.id}-collection-${index}`,
+        title: pageMetadata.title,
+        pageId: pageMetadata.id,
+        spaceKey: pageMetadata.space.key,
+        content: item.textContent.trim(),
+        type: 'list_item',
+        metadata: {
+          ...baseMetadata,
+          section: 'Collections',
+          listType: 'bullet'
+        }
+      });
+    });
+
+    // Page metadata vector (owner, views, etc.)
+    const metadataContent = {
+      owner: root.querySelector('[data-test-id="owner-name"]')?.textContent?.trim(),
+      views: root.querySelector('[data-test-id="views-count"]')?.textContent?.trim(),
+      lastUpdated: root.querySelector('[data-test-id="last-modified"]')?.textContent?.trim()
+    };
+
+    vectors.push({
+      id: `${pageMetadata.id}-metadata`,
+      title: pageMetadata.title,
+      pageId: pageMetadata.id,
+      spaceKey: pageMetadata.space.key,
+      content: JSON.stringify(metadataContent),
+      type: 'metadata',
+      metadata: baseMetadata
+    });
+
+    return vectors;
+  } catch (error) {
+    console.error("Error extracting vector content:", error);
+    return [];
+  }
+}
+
+// Helper function to process tables
+function processTable(tableNode: any): string {
+  const headers = tableNode.querySelectorAll('th').map(th => th.textContent.trim());
+  const rows = tableNode.querySelectorAll('tr').map(tr => 
+    tr.querySelectorAll('td').map(td => td.textContent.trim())
+  ).filter(row => row.length > 0);
+
+  let content = '';
+  if (headers.length > 0) {
+    content += `Headers: ${headers.join(' | ')}\n`;
+  }
+  content += rows.map(row => row.join(' | ')).join('\n');
+  return content;
+}
+
 // Main function to scrape a Confluence page and save content
 async function scrapePage(client, pageId, outputDir = "./output") {
   try {
@@ -336,6 +439,15 @@ async function scrapePage(client, pageId, outputDir = "./output") {
       }
     }
 
+    // Add vector content extraction
+    const vectorContent = extractVectorContent(htmlContent, page);
+    
+    // Save vector content
+    await saveContentToFile(
+      JSON.stringify(vectorContent, null, 2),
+      path.join(pageDir, "vector_content.json")
+    );
+
     // Save metadata
     const metadata = {
       id: page.id,
@@ -349,6 +461,13 @@ async function scrapePage(client, pageId, outputDir = "./output") {
         title: att.title,
         mediaType: att.metadata ? att.metadata.mediaType : "Unknown",
       })),
+      vectorization: {
+        chunks: vectorContent.length,
+        types: [...new Set(vectorContent.map(v => v.type))],
+        totalTokens: vectorContent.reduce((acc, chunk) => 
+          acc + chunk.content.split(/\s+/).length, 0
+        )
+      }
     };
 
     await saveContentToFile(
