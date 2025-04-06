@@ -1,0 +1,20 @@
+{
+  "name": "confluence-scraper",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "confluence.js": "^1.7.4",
+    "dotenv": "^16.4.7",
+    "node-html-parser": "^7.0.1"
+  }
+}
