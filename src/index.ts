@@ -287,24 +287,23 @@ async function saveContentToFile(content, filePath) {
   }
 }
 
-// Add this interface for structured content
+// Fix the interface to match the original working structure
 interface VectorizedContent {
   id: string;
   title: string;
   pageId: string;
   spaceKey: string;
-  content: string;
-  type: 'main' | 'list_item' | 'metadata';
+  content: string;  // Changed back to string from object
+  type: 'section' | 'list_item' | 'metadata';
   metadata: {
     url: string;
     lastUpdated: string;
     author: string;
     section?: string;
-    listType?: 'bullet' | 'numbered';
   };
 }
 
-// Enhance the extraction function to capture all content
+// Update the extraction function to match the interface
 function extractVectorContent(htmlContent: string, pageMetadata: any): VectorizedContent[] {
   try {
     const root = parse(htmlContent);
@@ -316,54 +315,111 @@ function extractVectorContent(htmlContent: string, pageMetadata: any): Vectorize
       author: pageMetadata.version.by.displayName,
     };
 
-    // Main description vector
-    const mainDescription = root.querySelector('p');
-    if (mainDescription) {
+    // Process the main content first
+    const mainContent = root.querySelector('body') || root;
+    
+    // Split content into chunks based on headers and natural breaks
+    const contentSections = mainContent.querySelectorAll('div, p, table, ul, ol');
+    let currentChunk = {
+      content: '',
+      section: 'Main Content'
+    };
+    
+    contentSections.forEach((element, index) => {
+      // Check if this is a header
+      const header = element.querySelector('h1, h2, h3, h4, h5, h6');
+      if (header) {
+        // Save previous chunk if it exists
+        if (currentChunk.content.trim()) {
+          vectors.push({
+            id: `${pageMetadata.id}-chunk-${vectors.length}`,
+            title: pageMetadata.title,
+            pageId: pageMetadata.id,
+            spaceKey: pageMetadata.space.key,
+            content: currentChunk.content.trim(),
+            type: 'section',
+            metadata: {
+              ...baseMetadata,
+              section: currentChunk.section
+            }
+          });
+        }
+        // Start new chunk
+        currentChunk = {
+          content: header.textContent.trim(),
+          section: header.textContent.trim()
+        };
+      } else {
+        // Process different types of content
+        let text = '';
+        if (element.tagName === 'TABLE') {
+          text = processTable(element);
+        } else if (['UL', 'OL'].includes(element.tagName)) {
+          text = element.querySelectorAll('li')
+            .map(li => `• ${li.textContent.trim()}`)
+            .join('\n');
+        } else {
+          text = element.textContent.trim();
+        }
+
+        if (text) {
+          currentChunk.content += '\n\n' + text;
+        }
+
+        // Create a new chunk if it's getting too large (around 1000 characters)
+        if (currentChunk.content.length > 1000) {
+          vectors.push({
+            id: `${pageMetadata.id}-chunk-${vectors.length}`,
+            title: pageMetadata.title,
+            pageId: pageMetadata.id,
+            spaceKey: pageMetadata.space.key,
+            content: currentChunk.content.trim(),
+            type: 'section',
+            metadata: {
+              ...baseMetadata,
+              section: currentChunk.section
+            }
+          });
+          // Start new chunk with some overlap
+          const lastParagraph = currentChunk.content.split('\n\n').slice(-1)[0];
+          currentChunk = {
+            content: lastParagraph || '',
+            section: currentChunk.section
+          };
+        }
+      }
+    });
+
+    // Don't forget to add the last chunk
+    if (currentChunk.content.trim()) {
       vectors.push({
-        id: `${pageMetadata.id}-main`,
+        id: `${pageMetadata.id}-chunk-${vectors.length}`,
         title: pageMetadata.title,
         pageId: pageMetadata.id,
         spaceKey: pageMetadata.space.key,
-        content: mainDescription.textContent.trim(),
-        type: 'main',
+        content: currentChunk.content.trim(),
+        type: 'section',
         metadata: {
           ...baseMetadata,
-          section: 'Description'
+          section: currentChunk.section
         }
       });
     }
 
-    // Collection items vector
-    const listItems = root.querySelectorAll('ul > li');
-    listItems.forEach((item, index) => {
-      vectors.push({
-        id: `${pageMetadata.id}-collection-${index}`,
-        title: pageMetadata.title,
-        pageId: pageMetadata.id,
-        spaceKey: pageMetadata.space.key,
-        content: item.textContent.trim(),
-        type: 'list_item',
-        metadata: {
-          ...baseMetadata,
-          section: 'Collections',
-          listType: 'bullet'
-        }
-      });
-    });
-
-    // Page metadata vector (owner, views, etc.)
-    const metadataContent = {
-      owner: root.querySelector('[data-test-id="owner-name"]')?.textContent?.trim(),
-      views: root.querySelector('[data-test-id="views-count"]')?.textContent?.trim(),
-      lastUpdated: root.querySelector('[data-test-id="last-modified"]')?.textContent?.trim()
-    };
-
+    // Add metadata vector
     vectors.push({
       id: `${pageMetadata.id}-metadata`,
       title: pageMetadata.title,
       pageId: pageMetadata.id,
       spaceKey: pageMetadata.space.key,
-      content: JSON.stringify(metadataContent),
+      content: JSON.stringify({
+        title: pageMetadata.title,
+        spaceKey: pageMetadata.space.key,
+        sections: vectors.map(v => v.metadata.section).filter((s, i, arr) => arr.indexOf(s) === i),
+        totalChunks: vectors.length,
+        lastUpdated: pageMetadata.version.when,
+        author: pageMetadata.version.by.displayName
+      }, null, 2),
       type: 'metadata',
       metadata: baseMetadata
     });
@@ -375,19 +431,31 @@ function extractVectorContent(htmlContent: string, pageMetadata: any): Vectorize
   }
 }
 
-// Helper function to process tables
+// Update the processTable function to handle tables better
 function processTable(tableNode: any): string {
-  const headers = tableNode.querySelectorAll('th').map(th => th.textContent.trim());
-  const rows = tableNode.querySelectorAll('tr').map(tr => 
-    tr.querySelectorAll('td').map(td => td.textContent.trim())
-  ).filter(row => row.length > 0);
+  try {
+    const headers = tableNode.querySelectorAll('th')
+      .map((th: any) => th.textContent.trim());
+    
+    const rows = tableNode.querySelectorAll('tr')
+      .map((tr: any) => tr.querySelectorAll('td')
+        .map((td: any) => td.textContent.trim())
+      )
+      .filter((row: string[]) => row.length > 0);
 
-  let content = '';
-  if (headers.length > 0) {
-    content += `Headers: ${headers.join(' | ')}\n`;
+    let result = '';
+    if (headers.length > 0) {
+      result += `Table Headers: ${headers.join(' | ')}\n`;
+    }
+    rows.forEach((row: string[]) => {
+      result += `Row: ${row.join(' | ')}\n`;
+    });
+    
+    return result;
+  } catch (error) {
+    console.error("Error processing table:", error);
+    return '';
   }
-  content += rows.map(row => row.join(' | ')).join('\n');
-  return content;
 }
 
 // Main function to scrape a Confluence page and save content
@@ -439,14 +507,27 @@ async function scrapePage(client, pageId, outputDir = "./output") {
       }
     }
 
-    // Add vector content extraction
+    // Add debug logging for vector content
+    console.log(`[Scrape] Extracting vectors for page "${page.title}"`);
     const vectorContent = extractVectorContent(htmlContent, page);
-    
-    // Save vector content
-    await saveContentToFile(
-      JSON.stringify(vectorContent, null, 2),
-      path.join(pageDir, "vector_content.json")
-    );
+    console.log(`[Scrape] Generated ${vectorContent.length} vectors`);
+
+    if (vectorContent.length === 0) {
+      console.warn(`[Scrape] Warning: No vectors generated for page "${page.title}"`);
+      console.log('[Scrape] HTML Content sample:', htmlContent.slice(0, 200));
+    }
+
+    // Save vector content with better error handling
+    const vectorPath = path.join(pageDir, "vector_content.json");
+    try {
+      await saveContentToFile(
+        JSON.stringify(vectorContent, null, 2),
+        vectorPath
+      );
+      console.log(`[Scrape] Vectors saved to ${vectorPath}`);
+    } catch (error) {
+      console.error(`[Scrape] Error saving vectors to ${vectorPath}:`, error);
+    }
 
     // Save metadata
     const metadata = {
@@ -465,7 +546,7 @@ async function scrapePage(client, pageId, outputDir = "./output") {
         chunks: vectorContent.length,
         types: [...new Set(vectorContent.map(v => v.type))],
         totalTokens: vectorContent.reduce((acc, chunk) => 
-          acc + chunk.content.split(/\s+/).length, 0
+          acc + chunk.content.split(/\s+/).length, 0  // Fixed: content is now a string
         )
       }
     };
