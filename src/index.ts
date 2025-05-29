@@ -5,6 +5,7 @@
 // bun add confluence.js dotenv node-html-parser
 
 import { ConfluenceClient } from "confluence.js";
+import type { Config } from "confluence.js/out/config";
 import { parse } from "node-html-parser";
 import { config } from "dotenv";
 import fs from "node:fs/promises";
@@ -13,14 +14,66 @@ import path from "node:path";
 // Load environment variables from .env file
 config();
 
+interface ConfluencePageResponse {
+  id: string;
+  title: string;
+  body: {
+    storage: {
+      value: string;
+    };
+  };
+  space?: {
+    key: string;
+    name?: string;
+  };
+  version: {
+    number: number;
+    when: string;
+    by: {
+      displayName: string;
+    };
+    createdAt?: string;
+  };
+}
+
+interface ConfluenceAttachment {
+  id: string;
+  title: string;
+  container: {
+    id: string;
+  };
+  metadata?: {
+    mediaType: string;
+  };
+}
+
+interface ConfluenceSpace {
+  key: string;
+  name: string;
+  type?: string;
+}
+
+interface ParsedContent {
+  textContent: string;
+  tables: string[][][];
+  links: {
+    text: string;
+    href: string | undefined;
+  }[];
+  images: {
+    src: string | undefined;
+    alt: string;
+  }[];
+}
+
 // Configuration
 const CONFLUENCE_HOST =
   process.env.CONFLUENCE_HOST || "https://your-domain.atlassian.net";
 const AUTH_METHOD = process.env.AUTH_METHOD || "basic"; // Options: basic, oauth2, jwt, pat
 
 // Create the Confluence client based on authentication method
-function createConfluenceClient() {
-  const clientConfig = {
+function createConfluenceClient(): ConfluenceClient {
+  const clientConfig: Config = {
     host: CONFLUENCE_HOST,
     apiPrefix: "/wiki/rest/api", // This is correct
   };
@@ -30,23 +83,23 @@ function createConfluenceClient() {
       // Using email and API token (recommended for Cloud)
       clientConfig.authentication = {
         basic: {
-          email: process.env.CONFLUENCE_EMAIL,
-          apiToken: process.env.CONFLUENCE_API_TOKEN,
+          email: process.env.CONFLUENCE_EMAIL || "",
+          apiToken: process.env.CONFLUENCE_API_TOKEN || "",
         },
       };
       break;
     case "oauth2":
       clientConfig.authentication = {
         oauth2: {
-          accessToken: process.env.CONFLUENCE_ACCESS_TOKEN,
+          accessToken: process.env.CONFLUENCE_ACCESS_TOKEN || "",
         },
       };
       break;
     case "jwt":
       clientConfig.authentication = {
         jwt: {
-          issuer: process.env.CONFLUENCE_JWT_ISSUER,
-          secret: process.env.CONFLUENCE_JWT_SECRET,
+          issuer: process.env.CONFLUENCE_JWT_ISSUER || "",
+          secret: process.env.CONFLUENCE_JWT_SECRET || "",
           expiryTimeSeconds: parseInt(
             process.env.CONFLUENCE_JWT_EXPIRY || "180",
           ),
@@ -55,7 +108,7 @@ function createConfluenceClient() {
       break;
     case "pat":
       clientConfig.authentication = {
-        personalAccessToken: process.env.CONFLUENCE_PAT,
+        personalAccessToken: process.env.CONFLUENCE_PAT || "",
       };
       break;
     default:
@@ -71,7 +124,7 @@ function sanitizeFilename(name: string): string {
 }
 
 // Get page content with options to expand content
-async function getPageContent(client, pageId) {
+async function getPageContent(client: any, pageId: string): Promise<ConfluencePageResponse> {
   try {
     console.log(`[API] Fetching page content for ID: ${pageId}`);
     const response = await fetchDirectly(`/content/${pageId}?expand=body.storage,version,space`);
@@ -98,7 +151,7 @@ async function getPageContent(client, pageId) {
 }
 
 // Get all attachments for a page
-async function getPageAttachments(client, pageId) {
+async function getPageAttachments(client: any, pageId: string): Promise<ConfluenceAttachment[]> {
   try {
     console.log(`[API] Fetching attachments for page ID: ${pageId}`);
     const response = await fetchDirectly(`/content/${pageId}/child/attachment?expand=version,metadata`);
@@ -109,7 +162,7 @@ async function getPageAttachments(client, pageId) {
     }
 
     console.log(`[API] Found ${response.results.length} attachments`);
-    console.log('[API] Attachments summary:', response.results.map(att => ({
+    console.log('[API] Attachments summary:', response.results.map((att: any) => ({
       id: att.id,
       title: att.title,
       mediaType: att.metadata?.mediaType
@@ -122,10 +175,10 @@ async function getPageAttachments(client, pageId) {
 }
 
 // Download an attachment
-async function downloadAttachment(client, attachmentId, targetDir) {
+async function downloadAttachment(client: any, attachmentId: string, targetDir: string): Promise<string | null> {
   try {
     // Get attachment metadata
-    const attachment = await fetchDirectly(`/content/${attachmentId}?expand=version,container`);
+    const attachment = await fetchDirectly(`/content/${attachmentId}?expand=version,container`) as ConfluenceAttachment;
 
     // The correct download URL format for attachments
     const downloadUrl = `${CONFLUENCE_HOST}/wiki/download/attachments/${attachment.container.id}/${attachment.title}`;
@@ -158,7 +211,7 @@ async function downloadAttachment(client, attachmentId, targetDir) {
 }
 
 // Parse the HTML content and extract relevant information
-function parseContentHtml(htmlContent) {
+function parseContentHtml(htmlContent: string): ParsedContent {
   try {
     const root = parse(htmlContent);
 
@@ -173,7 +226,7 @@ function parseContentHtml(htmlContent) {
           .map((cell) => cell.textContent.trim());
       });
       return rows;
-    });
+    }) as string[][][];
 
     // Extract links
     const links = root.querySelectorAll("a").map((link) => {
@@ -197,8 +250,8 @@ function parseContentHtml(htmlContent) {
       links,
       images,
     };
-  } catch (error) {
-    console.error("Error parsing HTML content:", error.message);
+  } catch (error: unknown) {
+    console.error("Error parsing HTML content:", error instanceof Error ? error.message : String(error));
     return {
       textContent: "",
       tables: [],
@@ -209,7 +262,7 @@ function parseContentHtml(htmlContent) {
 }
 
 // Get all pages in a space
-async function getAllPagesInSpace(client, spaceKey, startAt = 0, limit = 50) {
+async function getAllPagesInSpace(client: any, spaceKey: string, startAt: number = 0, limit: number = 50): Promise<ConfluencePageResponse[]> {
   try {
     console.log(`[API] Fetching pages in space "${spaceKey}" (start: ${startAt}, limit: ${limit})`);
     const response = await fetchDirectly(`/content?spaceKey=${spaceKey}&type=page&start=${startAt}&limit=${limit}&expand=version`);
@@ -237,7 +290,7 @@ async function getAllPagesInSpace(client, spaceKey, startAt = 0, limit = 50) {
 }
 
 // Search for pages containing specific text
-async function searchPages(client, searchQuery, startAt = 0, limit = 50) {
+async function searchPages(client: any, searchQuery: string, startAt: number = 0, limit: number = 50): Promise<any[]> {
   try {
     const response = await client.search.search({
       cql: `text ~ "${searchQuery}"`,
@@ -260,18 +313,19 @@ async function searchPages(client, searchQuery, startAt = 0, limit = 50) {
     }
 
     return allResults;
-  } catch (error) {
+  } catch (error: unknown) {
+    const err = error as any;
     console.error(`[API] Error searching for "${searchQuery}":`, {
-      error: error.message,
-      status: error.status,
-      details: error.response?.data || 'No additional details available'
+      error: err.message || String(error),
+      status: err.status,
+      details: err.response?.data || 'No additional details available'
     });
     return [];
   }
 }
 
 // Save content to file
-async function saveContentToFile(content, filePath) {
+async function saveContentToFile(content: string, filePath: string): Promise<string | null> {
   try {
     // Ensure directory exists
     const dir = path.dirname(filePath);
@@ -281,8 +335,8 @@ async function saveContentToFile(content, filePath) {
     await fs.writeFile(filePath, content);
     console.log(`Content saved to ${filePath}`);
     return filePath;
-  } catch (error) {
-    console.error(`Error saving content to ${filePath}:`, error.message);
+  } catch (error: unknown) {
+    console.error(`Error saving content to ${filePath}:`, error instanceof Error ? error.message : String(error));
     return null;
   }
 }
@@ -459,7 +513,11 @@ function processTable(tableNode: any): string {
 }
 
 // Main function to scrape a Confluence page and save content
-async function scrapePage(client, pageId, outputDir = "./output") {
+async function scrapePage(client: any, pageId: string, outputDir: string = "./output"): Promise<{
+  pageId: string;
+  title: string;
+  outputDir: string;
+} | null> {
   try {
     console.log(`Scraping page with ID: ${pageId}`);
 
@@ -562,14 +620,14 @@ async function scrapePage(client, pageId, outputDir = "./output") {
       title: page.title,
       outputDir: pageDir,
     };
-  } catch (error) {
-    console.error(`Failed to scrape page ${pageId}:`, error.message);
+  } catch (error: unknown) {
+    console.error(`Failed to scrape page ${pageId}:`, error instanceof Error ? error.message : String(error));
     return null;
   }
 }
 
 // Add this function after createConfluenceClient()
-async function validateConfiguration(client) {
+async function validateConfiguration(client: any): Promise<boolean> {
   console.log('[Validation] Checking environment variables and API access...');
   
   // Check required env variables
@@ -614,21 +672,24 @@ async function validateConfiguration(client) {
 
     console.log('[Validation] API connectivity test successful');
     return true;
-  } catch (error) {
+  } catch (error: unknown) {
+    const err = error as any;
     console.error('[Validation] API connectivity test failed:', {
-      error: error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      details: error.response?.data
+      error: err.message || String(error),
+      status: err.response?.status,
+      statusText: err.response?.statusText,
+      details: err.response?.data
     });
     return false;
   }
 }
 
 // Add this function to test just the space access
-async function testSpaceAccess(client) {
+async function testSpaceAccess(client: any): Promise<boolean> {
   try {
     const spaceKey = process.env.CONFLUENCE_SPACE_KEY;
+    if (!spaceKey) return false;
+    
     // Try both with and without the ~ prefix
     const spaceKeys = [
       spaceKey,
@@ -652,19 +713,19 @@ async function testSpaceAccess(client) {
           process.env.CONFLUENCE_SPACE_KEY = key;
           return true;
         }
-      } catch (e) {
-        console.log(`[Test] Failed with key ${key}:`, e.message);
+      } catch (e: unknown) {
+        console.log(`[Test] Failed with key ${key}:`, e instanceof Error ? e.message : String(e));
       }
     }
     return false;
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('[Test] Space access test failed:', error);
     return false;
   }
 }
 
 // Add this helper function
-async function fetchDirectly(endpoint, options = {}) {
+async function fetchDirectly(endpoint: string, options: any = {}): Promise<any> {
   const url = `${CONFLUENCE_HOST}/wiki/rest/api${endpoint}`;
   const response = await fetch(url, {
     ...options,
@@ -683,7 +744,7 @@ async function fetchDirectly(endpoint, options = {}) {
 }
 
 // Add this test function
-async function testDirectFetch() {
+async function testDirectFetch(): Promise<boolean> {
   try {
     console.log('[Test] Testing direct fetch...');
     
@@ -703,14 +764,14 @@ async function testDirectFetch() {
     });
     
     return true;
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('[Test] Direct fetch failed:', error);
     return false;
   }
 }
 
 // Main execution function - examples of usage
-async function main() {
+async function main(): Promise<void> {
   try {
     console.log('[Main] Testing direct fetch first...');
     const directFetchWorking = await testDirectFetch();
@@ -742,11 +803,12 @@ async function main() {
     }
 
     console.log('[Main] Scraping completed successfully!');
-  } catch (error) {
+  } catch (error: unknown) {
+    const err = error as any;
     console.error('[Main] Fatal error in scraping process:', {
-      error: error.message,
-      stack: error.stack,
-      details: error.response?.data
+      error: err.message || String(error),
+      stack: err.stack,
+      details: err.response?.data
     });
     process.exit(1);
   }
