@@ -66,7 +66,7 @@ function createConfluenceClient() {
 }
 
 // Helper function to sanitize content for file system
-function sanitizeFilename(name) {
+function sanitizeFilename(name: string): string {
   return name.replace(/[/\\?%*:|"<>]/g, "-");
 }
 
