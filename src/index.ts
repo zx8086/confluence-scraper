@@ -69,12 +69,12 @@ interface ParsedContent {
 // Configuration
 const CONFLUENCE_HOST =
   process.env.CONFLUENCE_HOST || "https://your-domain.atlassian.net";
-const AUTH_METHOD = process.env.AUTH_METHOD || "basic"; // Options: basic, oauth2, jwt, pat
 
 // Create the Confluence client based on authentication method
 function createConfluenceClient(): ConfluenceClient {
+  const AUTH_METHOD = process.env.AUTH_METHOD || "basic"; // Read at runtime for testing
   const clientConfig: Config = {
-    host: CONFLUENCE_HOST,
+    host: process.env.CONFLUENCE_HOST || "https://your-domain.atlassian.net",
     apiPrefix: "/wiki/rest/api", // This is correct
   };
 
@@ -639,12 +639,18 @@ async function validateConfiguration(client: any): Promise<boolean> {
     'CONFLUENCE_SPACE_KEY': process.env.CONFLUENCE_SPACE_KEY
   };
 
+  let missingVars = false;
   for (const [name, value] of Object.entries(requiredVars)) {
     if (!value) {
       console.error(`[Validation] Missing required environment variable: ${name}`);
+      missingVars = true;
     } else {
       console.log(`[Validation] Found ${name}: ${name.includes('TOKEN') ? '****' : value}`);
     }
+  }
+  
+  if (missingVars) {
+    return false;
   }
 
   // Test API connectivity
@@ -814,5 +820,26 @@ async function main(): Promise<void> {
   }
 }
 
-// Run the main function
-main();
+export {
+  createConfluenceClient,
+  sanitizeFilename,
+  getPageContent,
+  getPageAttachments,
+  downloadAttachment,
+  parseContentHtml,
+  getAllPagesInSpace,
+  searchPages,
+  saveContentToFile,
+  extractVectorContent,
+  processTable,
+  scrapePage,
+  validateConfiguration,
+  testSpaceAccess,
+  fetchDirectly,
+  testDirectFetch
+};
+
+// Run the main function only if this file is executed directly
+if (import.meta.main) {
+  main();
+}
